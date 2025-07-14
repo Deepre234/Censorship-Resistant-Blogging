@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Censorship-Resistant Blog</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header>
+        <nav class="navbar">
+            <div class="nav-container">
+                <h1 class="logo">📝 ResistBlog</h1>
+                <div class="nav-menu">
+                    <button id="connectBtn" class="btn primary">Connect Wallet</button>
+                    <button id="registerBtn" class="btn secondary" style="display: none;">Register</button>
+                    <span id="userInfo" style="display: none;"></span>
+                </div>
+            </div>
+        </nav>
+    </header>
+
+    <main class="main-container">
+        <section class="hero">
+            <h2>🚀 Uncensorable Blogging Platform</h2>
+            <p>Write freely, tip creators, build community on the blockchain</p>
+        </section>
+
+        <div class="content-wrapper">
+            <aside class="sidebar">
+                <div class="stats-card">
+                    <h3>📊 Platform Stats</h3>
+                    <div id="stats">
+                        <p>Total Users: <span id="totalUsers">0</span></p>
+                        <p>Total Posts: <span id="totalPosts">0</span></p>
+                        <p>Current Block: <span id="currentBlock">0</span></p>
+                    </div>
+                </div>
+
+                <div class="user-card" id="userCard" style="display: none;">
+                    <h3>👤 Your Profile</h3>
+                    <div id="userProfile"></div>
+                </div>
+            </aside>
+
+            <div class="main-content">
+                <div class="post-form-container" id="postForm" style="display: none;">
+                    <h3>✍️ Write New Post</h3>
+                    <form id="createPostForm">
+                        <input type="text" id="postTitle" placeholder="Post title..." maxlength="100" required>
+                        <textarea id="postContent" placeholder="Share your thoughts..." maxlength="2000" required></textarea>
+                        <button type="submit" class="btn primary">Publish Post</button>
+                    </form>
+                </div>
+
+                <div class="posts-container">
+                    <h3>📰 Recent Posts</h3>
+                    <div id="postsGrid"></div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div class="modal" id="registerModal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h3>🎯 Register Account</h3>
+            <form id="registerForm">
+                <input type="text" id="username" placeholder="Username" maxlength="50" required>
+                <textarea id="bio" placeholder="Tell us about yourself..." maxlength="500"></textarea>
+                <button type="submit" class="btn primary">Create Account</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="modal" id="tipModal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h3>💰 Tip Author</h3>
+            <div id="tipContent">
+                <p>Send STX to support this author</p>
+                <input type="number" id="tipAmount" placeholder="Amount in STX" min="0.1" step="0.1">
+                <button id="sendTipBtn" class="btn primary">Send Tip</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
