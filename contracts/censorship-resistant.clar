@@ -4,10 +4,13 @@
 (define-constant ERR-ALREADY-EXISTS (err u409))
 (define-constant ERR-INVALID-AMOUNT (err u400))
 (define-constant ERR-INSUFFICIENT-BALANCE (err u402))
+(define-constant ERR-BOUNTY-ALREADY-CLAIMED (err u403))
+(define-constant ERR-CANNOT-CLAIM-OWN-BOUNTY (err u405))
 
 (define-data-var next-post-id uint u1)
 (define-data-var next-user-id uint u1)
 (define-data-var contract-balance uint u0)
+(define-data-var next-bounty-id uint u1)
 
 (define-map users
   { user-id: uint }
@@ -53,6 +56,24 @@
 (define-map user-followers
   { follower: uint, following: uint }
   { followed-at: uint }
+)
+
+(define-map post-bounties
+  { bounty-id: uint }
+  {
+    post-id: uint,
+    creator-id: uint,
+    amount: uint,
+    created-at: uint,
+    claimed-by: (optional uint),
+    claimed-at: (optional uint),
+    is-active: bool
+  }
+)
+
+(define-map post-bounty-lookup
+  { post-id: uint }
+  { bounty-id: uint }
 )
 
 (define-public (register-user (username (string-ascii 50)) (bio (string-utf8 500)))
@@ -246,10 +267,82 @@
   (var-get next-user-id)
 )
 
+(define-public (place-bounty (post-id uint) (amount uint))
+  (let (
+    (bounty-id (var-get next-bounty-id))
+    (post-data (unwrap! (map-get? posts { post-id: post-id }) ERR-NOT-FOUND))
+    (user-data (unwrap! (map-get? user-addresses { address: tx-sender }) ERR-UNAUTHORIZED))
+    (user-id (get user-id user-data))
+    (existing-bounty (map-get? post-bounty-lookup { post-id: post-id }))
+  )
+    (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+    (asserts! (get is-active post-data) ERR-NOT-FOUND)
+    (asserts! (is-none existing-bounty) ERR-ALREADY-EXISTS)
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (map-set post-bounties
+      { bounty-id: bounty-id }
+      {
+        post-id: post-id,
+        creator-id: user-id,
+        amount: amount,
+        created-at: stacks-block-height,
+        claimed-by: none,
+        claimed-at: none,
+        is-active: true
+      }
+    )
+    (map-set post-bounty-lookup { post-id: post-id } { bounty-id: bounty-id })
+    (var-set next-bounty-id (+ bounty-id u1))
+    (ok bounty-id)
+  )
+)
+
+(define-public (claim-bounty (post-id uint))
+  (let (
+    (bounty-lookup (unwrap! (map-get? post-bounty-lookup { post-id: post-id }) ERR-NOT-FOUND))
+    (bounty-id (get bounty-id bounty-lookup))
+    (bounty-data (unwrap! (map-get? post-bounties { bounty-id: bounty-id }) ERR-NOT-FOUND))
+    (user-data (unwrap! (map-get? user-addresses { address: tx-sender }) ERR-UNAUTHORIZED))
+    (claimer-id (get user-id user-data))
+    (claimer-info (unwrap! (map-get? users { user-id: claimer-id }) ERR-NOT-FOUND))
+    (amount (get amount bounty-data))
+  )
+    (asserts! (get is-active bounty-data) ERR-BOUNTY-ALREADY-CLAIMED)
+    (asserts! (not (is-eq (get creator-id bounty-data) claimer-id)) ERR-CANNOT-CLAIM-OWN-BOUNTY)
+    (asserts! (is-none (get claimed-by bounty-data)) ERR-BOUNTY-ALREADY-CLAIMED)
+    (try! (as-contract (stx-transfer? amount tx-sender tx-sender)))
+    (map-set post-bounties
+      { bounty-id: bounty-id }
+      (merge bounty-data {
+        claimed-by: (some claimer-id),
+        claimed-at: (some stacks-block-height),
+        is-active: false
+      })
+    )
+    (map-set users
+      { user-id: claimer-id }
+      (merge claimer-info { total-tips-received: (+ (get total-tips-received claimer-info) amount) })
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-bounty (bounty-id uint))
+  (map-get? post-bounties { bounty-id: bounty-id })
+)
+
+(define-read-only (get-post-bounty (post-id uint))
+  (match (map-get? post-bounty-lookup { post-id: post-id })
+    bounty-lookup (map-get? post-bounties { bounty-id: (get bounty-id bounty-lookup) })
+    none
+  )
+)
+
 (define-read-only (get-contract-stats)
   {
     total-users: (- (var-get next-user-id) u1),
     total-posts: (- (var-get next-post-id) u1),
+    total-bounties: (- (var-get next-bounty-id) u1),
     current-block: stacks-block-height
   }
 )
