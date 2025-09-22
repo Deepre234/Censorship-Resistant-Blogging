@@ -6,11 +6,17 @@
 (define-constant ERR-INSUFFICIENT-BALANCE (err u402))
 (define-constant ERR-BOUNTY-ALREADY-CLAIMED (err u403))
 (define-constant ERR-CANNOT-CLAIM-OWN-BOUNTY (err u405))
+(define-constant ERR-VOTING-ENDED (err u406))
+(define-constant ERR-ALREADY-VOTED (err u407))
+(define-constant ERR-INSUFFICIENT-STAKE (err u408))
+(define-constant ERR-INVALID-VOTE (err u409))
 
 (define-data-var next-post-id uint u1)
 (define-data-var next-user-id uint u1)
 (define-data-var contract-balance uint u0)
 (define-data-var next-bounty-id uint u1)
+(define-data-var next-vote-id uint u1)
+(define-data-var min-stake-to-vote uint u100)
 
 (define-map users
   { user-id: uint }
@@ -74,6 +80,36 @@
 (define-map post-bounty-lookup
   { post-id: uint }
   { bounty-id: uint }
+)
+
+(define-map moderation-votes
+  { vote-id: uint }
+  {
+    post-id: uint,
+    flagged-by: uint,
+    reason: (string-ascii 100),
+    votes-for: uint,
+    votes-against: uint,
+    total-stake-for: uint,
+    total-stake-against: uint,
+    voting-ends: uint,
+    is-active: bool,
+    final-decision: (optional bool)
+  }
+)
+
+(define-map vote-participation
+  { vote-id: uint, voter: uint }
+  {
+    vote-choice: bool,
+    stake-weight: uint,
+    voted-at: uint
+  }
+)
+
+(define-map post-moderation-lookup
+  { post-id: uint }
+  { vote-id: uint }
 )
 
 (define-public (register-user (username (string-ascii 50)) (bio (string-utf8 500)))
@@ -343,6 +379,150 @@
     total-users: (- (var-get next-user-id) u1),
     total-posts: (- (var-get next-post-id) u1),
     total-bounties: (- (var-get next-bounty-id) u1),
+    total-votes: (- (var-get next-vote-id) u1),
     current-block: stacks-block-height
   }
+)
+
+(define-public (flag-content (post-id uint) (reason (string-ascii 100)))
+  (let (
+    (vote-id (var-get next-vote-id))
+    (post-data (unwrap! (map-get? posts { post-id: post-id }) ERR-NOT-FOUND))
+    (user-data (unwrap! (map-get? user-addresses { address: tx-sender }) ERR-UNAUTHORIZED))
+    (flagger-id (get user-id user-data))
+    (flagger-info (unwrap! (map-get? users { user-id: flagger-id }) ERR-NOT-FOUND))
+    (existing-vote (map-get? post-moderation-lookup { post-id: post-id }))
+    (voting-period u1008)
+  )
+    (asserts! (get is-active post-data) ERR-NOT-FOUND)
+    (asserts! (is-none existing-vote) ERR-ALREADY-EXISTS)
+    (asserts! (>= (get total-tips-received flagger-info) (var-get min-stake-to-vote)) ERR-INSUFFICIENT-STAKE)
+    
+    (map-set moderation-votes
+      { vote-id: vote-id }
+      {
+        post-id: post-id,
+        flagged-by: flagger-id,
+        reason: reason,
+        votes-for: u0,
+        votes-against: u0,
+        total-stake-for: u0,
+        total-stake-against: u0,
+        voting-ends: (+ stacks-block-height voting-period),
+        is-active: true,
+        final-decision: none
+      }
+    )
+    
+    (map-set post-moderation-lookup { post-id: post-id } { vote-id: vote-id })
+    (var-set next-vote-id (+ vote-id u1))
+    (ok vote-id)
+  )
+)
+
+(define-public (vote-on-moderation (vote-id uint) (vote-for bool))
+  (let (
+    (vote-data (unwrap! (map-get? moderation-votes { vote-id: vote-id }) ERR-NOT-FOUND))
+    (user-data (unwrap! (map-get? user-addresses { address: tx-sender }) ERR-UNAUTHORIZED))
+    (voter-id (get user-id user-data))
+    (voter-info (unwrap! (map-get? users { user-id: voter-id }) ERR-NOT-FOUND))
+    (existing-participation (map-get? vote-participation { vote-id: vote-id, voter: voter-id }))
+    (stake-weight (+ (get total-tips-received voter-info) (get post-count voter-info)))
+  )
+    (asserts! (get is-active vote-data) ERR-VOTING-ENDED)
+    (asserts! (< stacks-block-height (get voting-ends vote-data)) ERR-VOTING-ENDED)
+    (asserts! (is-none existing-participation) ERR-ALREADY-VOTED)
+    (asserts! (>= stake-weight (var-get min-stake-to-vote)) ERR-INSUFFICIENT-STAKE)
+    
+    (map-set vote-participation
+      { vote-id: vote-id, voter: voter-id }
+      {
+        vote-choice: vote-for,
+        stake-weight: stake-weight,
+        voted-at: stacks-block-height
+      }
+    )
+    
+    (if vote-for
+      (map-set moderation-votes
+        { vote-id: vote-id }
+        (merge vote-data {
+          votes-for: (+ (get votes-for vote-data) u1),
+          total-stake-for: (+ (get total-stake-for vote-data) stake-weight)
+        })
+      )
+      (map-set moderation-votes
+        { vote-id: vote-id }
+        (merge vote-data {
+          votes-against: (+ (get votes-against vote-data) u1),
+          total-stake-against: (+ (get total-stake-against vote-data) stake-weight)
+        })
+      )
+    )
+    
+    (ok true)
+  )
+)
+
+(define-public (finalize-moderation-vote (vote-id uint))
+  (let (
+    (vote-data (unwrap! (map-get? moderation-votes { vote-id: vote-id }) ERR-NOT-FOUND))
+    (post-data (unwrap! (map-get? posts { post-id: (get post-id vote-data) }) ERR-NOT-FOUND))
+    (decision (> (get total-stake-for vote-data) (get total-stake-against vote-data)))
+  )
+    (asserts! (get is-active vote-data) ERR-VOTING-ENDED)
+    (asserts! (>= stacks-block-height (get voting-ends vote-data)) ERR-INVALID-VOTE)
+    
+    (map-set moderation-votes
+      { vote-id: vote-id }
+      (merge vote-data {
+        is-active: false,
+        final-decision: (some decision)
+      })
+    )
+    
+    (if decision
+      (map-set posts
+        { post-id: (get post-id vote-data) }
+        (merge post-data { is-active: false })
+      )
+      true
+    )
+    
+    (ok decision)
+  )
+)
+
+(define-public (set-min-stake-to-vote (new-min-stake uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-UNAUTHORIZED)
+    (var-set min-stake-to-vote new-min-stake)
+    (ok new-min-stake)
+  )
+)
+
+(define-read-only (get-moderation-vote (vote-id uint))
+  (map-get? moderation-votes { vote-id: vote-id })
+)
+
+(define-read-only (get-post-moderation-vote (post-id uint))
+  (match (map-get? post-moderation-lookup { post-id: post-id })
+    vote-lookup (map-get? moderation-votes { vote-id: (get vote-id vote-lookup) })
+    none
+  )
+)
+
+(define-read-only (get-user-vote (vote-id uint) (voter-id uint))
+  (map-get? vote-participation { vote-id: vote-id, voter: voter-id })
+)
+
+(define-read-only (calculate-user-stake (user-id uint))
+  (match (map-get? users { user-id: user-id })
+    user-data (+ (get total-tips-received user-data) (get post-count user-data))
+    u0
+  )
+)
+
+(define-read-only (get-min-stake-to-vote)
+  (var-get min-stake-to-vote)
 )
