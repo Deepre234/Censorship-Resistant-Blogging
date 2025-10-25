@@ -17,6 +17,7 @@
 (define-data-var next-bounty-id uint u1)
 (define-data-var next-vote-id uint u1)
 (define-data-var min-stake-to-vote uint u100)
+(define-data-var next-bookmark-id uint u1)
 
 (define-map users
   { user-id: uint }
@@ -110,6 +111,19 @@
 (define-map post-moderation-lookup
   { post-id: uint }
   { vote-id: uint }
+)
+
+(define-map user-bookmarks
+  { user-id: uint, post-id: uint }
+  {
+    bookmarked-at: uint,
+    bookmark-id: uint
+  }
+)
+
+(define-map bookmark-count
+  { user-id: uint }
+  { count: uint }
 )
 
 (define-public (register-user (username (string-ascii 50)) (bio (string-utf8 500)))
@@ -525,4 +539,62 @@
 
 (define-read-only (get-min-stake-to-vote)
   (var-get min-stake-to-vote)
+)
+
+(define-public (bookmark-post (post-id uint))
+  (let (
+    (bookmark-id (var-get next-bookmark-id))
+    (post-data (unwrap! (map-get? posts { post-id: post-id }) ERR-NOT-FOUND))
+    (user-data (unwrap! (map-get? user-addresses { address: tx-sender }) ERR-UNAUTHORIZED))
+    (user-id (get user-id user-data))
+    (existing-bookmark (map-get? user-bookmarks { user-id: user-id, post-id: post-id }))
+    (current-count (default-to { count: u0 } (map-get? bookmark-count { user-id: user-id })))
+  )
+    (asserts! (get is-active post-data) ERR-NOT-FOUND)
+    (asserts! (is-none existing-bookmark) ERR-ALREADY-EXISTS)
+    (map-set user-bookmarks
+      { user-id: user-id, post-id: post-id }
+      {
+        bookmarked-at: stacks-block-height,
+        bookmark-id: bookmark-id
+      }
+    )
+    (map-set bookmark-count
+      { user-id: user-id }
+      { count: (+ (get count current-count) u1) }
+    )
+    (var-set next-bookmark-id (+ bookmark-id u1))
+    (ok bookmark-id)
+  )
+)
+
+(define-public (remove-bookmark (post-id uint))
+  (let (
+    (user-data (unwrap! (map-get? user-addresses { address: tx-sender }) ERR-UNAUTHORIZED))
+    (user-id (get user-id user-data))
+    (existing-bookmark (unwrap! (map-get? user-bookmarks { user-id: user-id, post-id: post-id }) ERR-NOT-FOUND))
+    (current-count (default-to { count: u0 } (map-get? bookmark-count { user-id: user-id })))
+  )
+    (map-delete user-bookmarks { user-id: user-id, post-id: post-id })
+    (map-set bookmark-count
+      { user-id: user-id }
+      { count: (- (get count current-count) u1) }
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-bookmark (user-id uint) (post-id uint))
+  (map-get? user-bookmarks { user-id: user-id, post-id: post-id })
+)
+
+(define-read-only (is-bookmarked (user-id uint) (post-id uint))
+  (is-some (map-get? user-bookmarks { user-id: user-id, post-id: post-id }))
+)
+
+(define-read-only (get-user-bookmark-count (user-id uint))
+  (match (map-get? bookmark-count { user-id: user-id })
+    count-data (get count count-data)
+    u0
+  )
 )
