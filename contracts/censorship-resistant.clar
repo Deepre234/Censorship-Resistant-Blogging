@@ -18,6 +18,7 @@
 (define-data-var next-vote-id uint u1)
 (define-data-var min-stake-to-vote uint u100)
 (define-data-var next-bookmark-id uint u1)
+(define-data-var reputation-multiplier uint u10)
 
 (define-map users
   { user-id: uint }
@@ -124,6 +125,17 @@
 (define-map bookmark-count
   { user-id: uint }
   { count: uint }
+)
+
+(define-map user-reputation
+  { user-id: uint }
+  {
+    score: uint,
+    level: uint,
+    successful-flags: uint,
+    failed-flags: uint,
+    last-updated: uint
+  }
 )
 
 (define-public (register-user (username (string-ascii 50)) (bio (string-utf8 500)))
@@ -597,4 +609,136 @@
     count-data (get count count-data)
     u0
   )
+)
+
+(define-public (initialize-reputation)
+  (let (
+    (user-data (unwrap! (map-get? user-addresses { address: tx-sender }) ERR-UNAUTHORIZED))
+    (user-id (get user-id user-data))
+    (existing-rep (map-get? user-reputation { user-id: user-id }))
+  )
+    (asserts! (is-none existing-rep) ERR-ALREADY-EXISTS)
+    (map-set user-reputation
+      { user-id: user-id }
+      {
+        score: u100,
+        level: u1,
+        successful-flags: u0,
+        failed-flags: u0,
+        last-updated: stacks-block-height
+      }
+    )
+    (ok true)
+  )
+)
+
+(define-public (update-reputation-from-tip (user-id uint) (tip-amount uint))
+  (let (
+    (caller-data (unwrap! (map-get? user-addresses { address: tx-sender }) ERR-UNAUTHORIZED))
+    (rep-data (default-to 
+      { score: u100, level: u1, successful-flags: u0, failed-flags: u0, last-updated: u0 }
+      (map-get? user-reputation { user-id: user-id })))
+    (bonus (/ tip-amount (var-get reputation-multiplier)))
+    (new-score (+ (get score rep-data) bonus))
+    (new-level (calculate-level new-score))
+  )
+    (map-set user-reputation
+      { user-id: user-id }
+      (merge rep-data {
+        score: new-score,
+        level: new-level,
+        last-updated: stacks-block-height
+      })
+    )
+    (ok new-score)
+  )
+)
+
+(define-public (update-reputation-from-post (user-id uint))
+  (let (
+    (caller-data (unwrap! (map-get? user-addresses { address: tx-sender }) ERR-UNAUTHORIZED))
+    (caller-id (get user-id caller-data))
+    (rep-data (default-to 
+      { score: u100, level: u1, successful-flags: u0, failed-flags: u0, last-updated: u0 }
+      (map-get? user-reputation { user-id: user-id })))
+    (new-score (+ (get score rep-data) u5))
+    (new-level (calculate-level new-score))
+  )
+    (asserts! (is-eq caller-id user-id) ERR-UNAUTHORIZED)
+    (map-set user-reputation
+      { user-id: user-id }
+      (merge rep-data {
+        score: new-score,
+        level: new-level,
+        last-updated: stacks-block-height
+      })
+    )
+    (ok new-score)
+  )
+)
+
+(define-public (record-moderation-outcome (user-id uint) (was-successful bool))
+  (let (
+    (rep-data (unwrap! (map-get? user-reputation { user-id: user-id }) ERR-NOT-FOUND))
+    (current-score (get score rep-data))
+    (score-change (if was-successful u20 u10))
+    (new-score (if was-successful 
+      (+ current-score score-change)
+      (if (> current-score score-change) (- current-score score-change) u1)))
+    (new-level (calculate-level new-score))
+    (new-successful (if was-successful (+ (get successful-flags rep-data) u1) (get successful-flags rep-data)))
+    (new-failed (if was-successful (get failed-flags rep-data) (+ (get failed-flags rep-data) u1)))
+  )
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-UNAUTHORIZED)
+    (map-set user-reputation
+      { user-id: user-id }
+      {
+        score: new-score,
+        level: new-level,
+        successful-flags: new-successful,
+        failed-flags: new-failed,
+        last-updated: stacks-block-height
+      }
+    )
+    (ok new-score)
+  )
+)
+
+(define-read-only (calculate-level (score uint))
+  (if (>= score u1000) u5
+    (if (>= score u500) u4
+      (if (>= score u250) u3
+        (if (>= score u100) u2
+          u1))))
+)
+
+(define-read-only (get-reputation (user-id uint))
+  (map-get? user-reputation { user-id: user-id })
+)
+
+(define-read-only (get-reputation-score (user-id uint))
+  (match (map-get? user-reputation { user-id: user-id })
+    rep-data (get score rep-data)
+    u0
+  )
+)
+
+(define-read-only (get-reputation-level (user-id uint))
+  (match (map-get? user-reputation { user-id: user-id })
+    rep-data (get level rep-data)
+    u0
+  )
+)
+
+(define-public (set-reputation-multiplier (new-multiplier uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-UNAUTHORIZED)
+    (asserts! (> new-multiplier u0) ERR-INVALID-AMOUNT)
+    (var-set reputation-multiplier new-multiplier)
+    (ok new-multiplier)
+  )
+)
+
+(define-read-only (get-reputation-multiplier)
+  (var-get reputation-multiplier)
 )
